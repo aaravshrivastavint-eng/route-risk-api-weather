@@ -8,20 +8,24 @@ import asyncio
 load_dotenv()
 
 app = FastAPI(
-    title="Route Risk Weather API",
-    version="2.0.0",
-    description="Shipment route weather and traffic intelligence API"
+    title="Route Risk Operational Intelligence API",
+    version="4.0.0",
+    description=(
+        "Corridor-level logistics operational intelligence API"
+    )
 )
 
+# =========================================================
 # ENV VARIABLES
+# =========================================================
 
 OPENWEATHER_API_KEY = os.getenv("OPENWEATHER_API_KEY")
-
 OPENROUTE_API_KEY = os.getenv("OPENROUTE_API_KEY")
-
 TOMTOM_API_KEY = os.getenv("TOMTOM_API_KEY")
 
+# =========================================================
 # BASE URLS
+# =========================================================
 
 WEATHER_BASE_URL = (
     "https://api.openweathermap.org/data/2.5/forecast"
@@ -36,20 +40,22 @@ TOMTOM_TRAFFIC_URL = (
     "flowSegmentData/absolute/10/json"
 )
 
+# =========================================================
 # GEO HELPERS
+# =========================================================
 
 async def get_coordinates(city: str):
 
     url = (
-        f"http://api.openweathermap.org/geo/1.0/direct"
+        "http://api.openweathermap.org/geo/1.0/direct"
         f"?q={city}"
         f"&limit=1"
         f"&appid={OPENWEATHER_API_KEY}"
     )
+
     timeout = httpx.Timeout(20.0)
-    async with httpx.AsyncClient(
-        timeout=timeout
-    ) as client:
+
+    async with httpx.AsyncClient(timeout=timeout) as client:
 
         response = await client.get(url)
 
@@ -66,7 +72,9 @@ async def get_coordinates(city: str):
         "lon": data[0]["lon"]
     }
 
+# =========================================================
 # ROUTE FETCH
+# =========================================================
 
 async def get_route(source_coords, destination_coords):
 
@@ -76,54 +84,72 @@ async def get_route(source_coords, destination_coords):
 
     body = {
         "coordinates": [
-            [source_coords["lon"], source_coords["lat"]],
-            [destination_coords["lon"], destination_coords["lat"]]
-        ]
+            [
+                source_coords["lon"],
+                source_coords["lat"]
+            ],
+            [
+                destination_coords["lon"],
+                destination_coords["lat"]
+            ]
+        ],
+        "instructions": False
     }
-    timeout = httpx.Timeout(20.0)
-    async with httpx.AsyncClient(
-        timeout=timeout
-    ) as client:
 
-        response = await client.post(
-            ROUTE_BASE_URL,
-            headers=headers,
-            json=body
+    timeout = httpx.Timeout(30.0)
+
+    try:
+
+        async with httpx.AsyncClient(timeout=timeout) as client:
+
+            response = await client.post(
+                ROUTE_BASE_URL,
+                headers=headers,
+                json=body
+            )
+
+        if response.status_code != 200:
+
+            print("ROUTE API ERROR:", response.text)
+
+            return None
+
+        data = response.json()
+
+        if "routes" not in data:
+            return None
+
+        route = data["routes"][0]
+
+        geometry = route["geometry"]
+
+        summary = route["summary"]
+
+        distance_km = round(
+            summary["distance"] / 1000,
+            2
         )
 
-    if response.status_code != 200:
-        print(response.text)
+        duration_hours = round(
+            summary["duration"] / 3600,
+            2
+        )
+
+        return {
+            "geometry": geometry,
+            "distance_km": distance_km,
+            "duration_hours": duration_hours
+        }
+
+    except Exception as e:
+
+        print("ROUTE FETCH ERROR:", str(e))
+
         return None
 
-    data = response.json()
-
-    if "routes" not in data:
-        print(data)
-        return None
-
-    route = data["routes"][0]
-
-    geometry = route["geometry"]
-
-    summary = route["summary"]
-
-    distance_km = round(
-        summary["distance"] / 1000,
-        2
-    )
-
-    duration_hours = round(
-        summary["duration"] / 3600,
-        2
-    )
-
-    return {
-        "geometry": geometry,
-        "distance_km": distance_km,
-        "duration_hours": duration_hours
-    }
-
-# CHECKPOINT SAMPLING
+# =========================================================
+# WAYPOINT SAMPLING
+# =========================================================
 
 def sample_waypoints(route_coordinates):
 
@@ -156,7 +182,9 @@ def sample_waypoints(route_coordinates):
 
     return checkpoints
 
+# =========================================================
 # WEATHER FETCH
+# =========================================================
 
 async def get_forecast(lat, lon):
 
@@ -167,10 +195,10 @@ async def get_forecast(lat, lon):
         f"&appid={OPENWEATHER_API_KEY}"
         f"&units=metric"
     )
+
     timeout = httpx.Timeout(20.0)
-    async with httpx.AsyncClient(
-        timeout=timeout
-    ) as client:
+
+    async with httpx.AsyncClient(timeout=timeout) as client:
 
         response = await client.get(url)
 
@@ -179,7 +207,9 @@ async def get_forecast(lat, lon):
 
     return response.json()
 
+# =========================================================
 # TRAFFIC FETCH
+# =========================================================
 
 async def get_traffic(lat, lon):
 
@@ -188,10 +218,10 @@ async def get_traffic(lat, lon):
         f"?point={lat},{lon}"
         f"&key={TOMTOM_API_KEY}"
     )
+
     timeout = httpx.Timeout(20.0)
-    async with httpx.AsyncClient(
-        timeout=timeout
-    ) as client:
+
+    async with httpx.AsyncClient(timeout=timeout) as client:
 
         response = await client.get(url)
 
@@ -200,26 +230,42 @@ async def get_traffic(lat, lon):
 
     return response.json()
 
-# WEATHER RISK ENGINE
+# =========================================================
+# WEATHER ANALYSIS
+# =========================================================
 
 def calculate_weather_risk(forecast_data):
 
-    max_score = 0
+    risk_score = 0
 
     risk_factors = set()
 
+    dominant_condition = "Clear"
+
+    max_temperature = 0
+
+    instability_detected = False
+
     for item in forecast_data["list"][:8]:
 
-        score = 0
-
         weather_condition = (
-            item["weather"][0]["main"].lower()
+            item["weather"][0]["main"]
         )
+
+        weather_lower = weather_condition.lower()
 
         temperature = item["main"]["temp"]
 
+        max_temperature = max(
+            max_temperature,
+            temperature
+        )
+
+        dominant_condition = weather_condition
+
         wind_speed = item.get(
-            "wind", {}
+            "wind",
+            {}
         ).get("speed", 0)
 
         visibility = item.get(
@@ -228,106 +274,108 @@ def calculate_weather_risk(forecast_data):
         )
 
         rain_volume = item.get(
-            "rain", {}
+            "rain",
+            {}
         ).get("3h", 0)
 
-        # WEATHER CONDITIONS
+        if "thunderstorm" in weather_lower:
 
-        if "thunderstorm" in weather_condition:
+            risk_score += 45
 
-            score += 50
+            instability_detected = True
 
             risk_factors.add(
                 "Thunderstorm conditions"
             )
 
-        elif "rain" in weather_condition:
+        elif "rain" in weather_lower:
 
-            score += 30
+            risk_score += 25
+
+            instability_detected = True
 
             risk_factors.add(
                 "Heavy rainfall"
             )
 
-        elif "snow" in weather_condition:
+        elif "snow" in weather_lower:
 
-            score += 40
+            risk_score += 35
+
+            instability_detected = True
 
             risk_factors.add(
                 "Snow conditions"
             )
 
-        # RAIN VOLUME
-
-        score += min(rain_volume * 2, 25)
-
         if rain_volume > 5:
+
+            risk_score += 20
+
+            instability_detected = True
 
             risk_factors.add(
                 "Intense rainfall"
             )
 
-        # WIND
-
         if wind_speed > 15:
 
-            score += 30
+            risk_score += 25
+
+            instability_detected = True
 
             risk_factors.add(
                 "Strong winds"
             )
 
-        elif wind_speed > 8:
-
-            score += 15
-
-        # VISIBILITY
-
         if visibility < 2000:
 
-            score += 30
+            risk_score += 25
+
+            instability_detected = True
 
             risk_factors.add(
                 "Low visibility"
             )
 
-        elif visibility < 5000:
-
-            score += 15
-
-        # TEMPERATURE
-
         if temperature > 42:
 
-            score += 20
+            risk_score += 15
 
             risk_factors.add(
                 "Extreme heat"
             )
 
-        elif temperature < 2:
+        if temperature < 2:
 
-            score += 20
+            risk_score += 15
 
             risk_factors.add(
                 "Extreme cold"
             )
 
-        max_score = max(max_score, score)
-
     return {
-        "risk_score": round(max_score),
-        "risk_factors": list(risk_factors)
+        "weather_score": round(risk_score / 8),
+        "risk_factors": list(risk_factors),
+        "dominant_condition": dominant_condition,
+        "max_temperature": round(max_temperature, 2),
+        "instability_detected": instability_detected
     }
 
-# TRAFFIC RISK ENGINE
+# =========================================================
+# TRAFFIC ANALYSIS
+# =========================================================
+
 def calculate_traffic_risk(traffic_data):
 
     if not traffic_data:
 
         return {
             "traffic_score": 0,
-            "traffic_level": "LOW"
+            "traffic_level": "LOW",
+            "current_speed": 65,
+            "free_flow_speed": 65,
+            "congestion_ratio": 0
         }
 
     flow_data = traffic_data.get(
@@ -337,46 +385,31 @@ def calculate_traffic_risk(traffic_data):
 
     current_speed = flow_data.get(
         "currentSpeed",
-        0
+        65
     )
 
     free_flow_speed = max(
-        flow_data.get("freeFlowSpeed", 1),
+        flow_data.get(
+            "freeFlowSpeed",
+            65
+        ),
         1
     )
 
-    confidence = flow_data.get(
-        "confidence",
-        0
-    )
-
     congestion_ratio = (
-        1 - (current_speed / free_flow_speed)
+        1 - (
+            current_speed /
+            free_flow_speed
+        )
     )
 
-    score = 0
+    score = round(congestion_ratio * 100)
 
-    if congestion_ratio > 0.7:
-
-        score += 50
-
-    elif congestion_ratio > 0.5:
-
-        score += 35
-
-    elif congestion_ratio > 0.3:
-
-        score += 20
-
-    if confidence < 0.5:
-
-        score += 10
-
-    if score >= 50:
+    if score >= 70:
 
         level = "HIGH"
 
-    elif score >= 25:
+    elif score >= 40:
 
         level = "MEDIUM"
 
@@ -385,7 +418,7 @@ def calculate_traffic_risk(traffic_data):
         level = "LOW"
 
     return {
-        "traffic_score": round(score),
+        "traffic_score": score,
         "traffic_level": level,
         "current_speed": current_speed,
         "free_flow_speed": free_flow_speed,
@@ -395,9 +428,15 @@ def calculate_traffic_risk(traffic_data):
         )
     }
 
-# ROUTE ANALYSIS
+# =========================================================
+# ROUTE ANALYSIS ENGINE
+# =========================================================
 
-async def analyze_route(waypoints):
+async def analyze_route(
+    waypoints,
+    distance_km,
+    baseline_duration
+):
 
     weather_tasks = [
         get_forecast(
@@ -407,18 +446,12 @@ async def analyze_route(waypoints):
         for point in waypoints
     ]
 
-    traffic_points = [
-    waypoints[0],
-    waypoints[len(waypoints) // 2],
-    waypoints[-1]
-    ]
-
     traffic_tasks = [
         get_traffic(
-           point["lat"],
-          point["lon"]
+            point["lat"],
+            point["lon"]
         )
-        for point in traffic_points
+        for point in waypoints
     ]
 
     forecasts = await asyncio.gather(
@@ -429,13 +462,25 @@ async def analyze_route(waypoints):
         *traffic_tasks
     )
 
-    highest_score = 0
+    all_speeds = []
 
-    final_level = "LOW"
+    all_weather_scores = []
 
-    combined_factors = set()
+    all_traffic_scores = []
 
-    for idx, forecast in enumerate(forecasts):
+    risk_factors = set()
+
+    dominant_weather = "Clear"
+
+    max_temperature = 0
+
+    instability_detected = False
+
+    for idx in range(len(waypoints)):
+
+        forecast = forecasts[idx]
+
+        traffic = traffic_results[idx]
 
         if not forecast:
             continue
@@ -444,112 +489,278 @@ async def analyze_route(waypoints):
             forecast
         )
 
-        traffic_index = min(
-            idx,
-            len(traffic_results) - 1
-        )
-
-        traffic_data = traffic_results[
-        traffic_index
-        ]
-
-        if isinstance(traffic_data, Exception):
-
-            traffic_data = None
-
         traffic_risk = calculate_traffic_risk(
-            traffic_data
+            traffic
         )
 
-        combined_score = (
-            weather_risk["risk_score"] * 0.7
-            +
-            traffic_risk["traffic_score"] * 0.3
+        all_weather_scores.append(
+            weather_risk["weather_score"]
         )
 
-        combined_factors.update(
-            weather_risk["risk_factors"]
+        all_traffic_scores.append(
+            traffic_risk["traffic_score"]
         )
 
-        if combined_score > highest_score:
+        all_speeds.append(
+            traffic_risk["current_speed"]
+        )
 
-            highest_score = combined_score
+        dominant_weather = (
+            weather_risk[
+                "dominant_condition"
+            ]
+        )
 
-    # FINAL LEVEL
+        max_temperature = max(
+            max_temperature,
+            weather_risk[
+                "max_temperature"
+            ]
+        )
 
-    if highest_score >= 80:
+        if weather_risk[
+            "instability_detected"
+        ]:
+            instability_detected = True
 
-        final_level = "CRITICAL"
+        risk_factors.update(
+            weather_risk[
+                "risk_factors"
+            ]
+        )
 
-        delay_hours = 8
+    # =====================================================
+    # SPEED + ETA MODEL
+    # =====================================================
 
-    elif highest_score >= 55:
+    if all_speeds:
 
-        final_level = "HIGH"
-
-        delay_hours = 5
-
-    elif highest_score >= 30:
-
-        final_level = "MEDIUM"
-
-        delay_hours = 2
+        effective_speed = round(
+            sum(all_speeds) /
+            len(all_speeds),
+            2
+        )
 
     else:
 
-        final_level = "LOW"
+        effective_speed = 65
 
-        delay_hours = 0
+    predicted_duration = round(
+        distance_km / max(effective_speed, 1),
+        2
+    )
 
-    return {
-        "overall_risk_score": round(highest_score),
-        "overall_risk_level": final_level,
-        "estimated_delay_hours": delay_hours,
-        "risk_factors": list(combined_factors),
-        "segments_analyzed": len(waypoints)
-    }
+    estimated_delay = round(
+        max(
+            predicted_duration -
+            baseline_duration,
+            0
+        ),
+        2
+    )
 
-# RECOMMENDATION ENGINE
+    # =====================================================
+    # COMBINED RISK MODEL
+    # =====================================================
 
-def generate_recommendation(
-    risk_level,
-    distance_km
-):
+    avg_weather_score = (
+        sum(all_weather_scores) /
+        max(len(all_weather_scores), 1)
+    )
+
+    avg_traffic_score = (
+        sum(all_traffic_scores) /
+        max(len(all_traffic_scores), 1)
+    )
+
+    overall_score = round(
+        (avg_weather_score * 0.4) +
+        (avg_traffic_score * 0.6)
+    )
+
+    if overall_score >= 75:
+
+        risk_level = "CRITICAL"
+
+    elif overall_score >= 55:
+
+        risk_level = "HIGH"
+
+    elif overall_score >= 30:
+
+        risk_level = "MEDIUM"
+
+    else:
+
+        risk_level = "LOW"
+
+    # =====================================================
+    # CORRIDOR STABILITY
+    # =====================================================
+
+    if effective_speed < 35:
+
+        corridor_stability = "Congested"
+
+    elif effective_speed < 50:
+
+        corridor_stability = "Moderate"
+
+    else:
+
+        corridor_stability = "Stable"
+
+    # =====================================================
+    # TRAFFIC INTERPRETATION
+    # =====================================================
+
+    if effective_speed >= 55:
+
+        traffic_impact = (
+            "Minimal congestion detected "
+            "across analyzed checkpoints."
+        )
+
+        congestion_level = "LOW"
+
+    elif effective_speed >= 40:
+
+        traffic_impact = (
+            "Moderate traffic congestion "
+            "observed across route segments."
+        )
+
+        congestion_level = "MEDIUM"
+
+    else:
+
+        traffic_impact = (
+            "Severe traffic slowdown detected "
+            "across operational corridor."
+        )
+
+        congestion_level = "HIGH"
+
+    # =====================================================
+    # DISPATCH FEASIBILITY
+    # =====================================================
 
     if risk_level == "CRITICAL":
 
-        return (
-            "Avoid dispatch. Severe route "
-            "disruptions expected."
+        dispatch_feasibility = (
+            "Avoid non-essential dispatch "
+            "operations."
         )
 
     elif risk_level == "HIGH":
 
-        if distance_km > 800:
-
-            return (
-                "Consider alternate corridor "
-                "routing or delayed dispatch."
-            )
-
-        return (
-            "Delay non-critical dispatches "
-            "and monitor traffic conditions."
+        dispatch_feasibility = (
+            "Dispatch only with active "
+            "monitoring and rerouting readiness."
         )
 
     elif risk_level == "MEDIUM":
 
+        dispatch_feasibility = (
+            "Proceed with caution and "
+            "continuous corridor monitoring."
+        )
+
+    else:
+
+        dispatch_feasibility = (
+            "Acceptable for standard "
+            "shipment movement."
+        )
+
+    return {
+
+        "overall_risk_score": overall_score,
+
+        "overall_risk_level": risk_level,
+
+        "predicted_operational_travel_time_hours":
+            predicted_duration,
+
+        "estimated_delay_hours":
+            estimated_delay,
+
+        "risk_factors":
+            list(risk_factors),
+
+        "dominant_weather":
+            dominant_weather,
+
+        "max_temperature":
+            round(max_temperature, 2),
+
+        "weather_instability":
+            instability_detected,
+
+        "average_speed":
+            effective_speed,
+
+        "traffic_level":
+            congestion_level,
+
+        "traffic_interpretation":
+            traffic_impact,
+
+        "corridor_stability":
+            corridor_stability,
+
+        "dispatch_feasibility":
+            dispatch_feasibility,
+
+        "segments_analyzed":
+            len(waypoints)
+    }
+
+# =========================================================
+# RECOMMENDATION ENGINE
+# =========================================================
+
+def generate_recommendation(analysis):
+
+    level = analysis[
+        "overall_risk_level"
+    ]
+
+    if level == "CRITICAL":
+
         return (
-            "Proceed with caution. Moderate "
-            "delays possible."
+            "Severe operational instability "
+            "detected across the shipment corridor. "
+            "Dispatch operations should be avoided "
+            "until route conditions stabilize."
+        )
+
+    elif level == "HIGH":
+
+        return (
+            "Operational degradation detected "
+            "across multiple route segments. "
+            "Prepare rerouting contingencies and "
+            "monitor movement continuously."
+        )
+
+    elif level == "MEDIUM":
+
+        return (
+            "Moderate operational disruption detected. "
+            "Shipment movement may continue with "
+            "active monitoring and ETA buffer adjustments."
         )
 
     return (
-        "Route conditions acceptable "
-        "for dispatch."
+        "Corridor conditions are currently stable "
+        "for shipment movement. No major operational "
+        "disruption detected across analyzed checkpoints."
     )
 
+# =========================================================
 # MAIN API
+# =========================================================
 
 @app.get("/route-risk")
 
@@ -557,8 +768,6 @@ async def route_risk(
     source: str,
     destination: str
 ):
-
-    # COORDINATES
 
     source_coords = await get_coordinates(
         source
@@ -574,11 +783,9 @@ async def route_risk(
             "success": False,
             "message": (
                 "Invalid source or "
-                "destination city"
+                "destination city."
             )
         }
-
-    # ROUTE
 
     route_data = await get_route(
         source_coords,
@@ -591,7 +798,7 @@ async def route_risk(
             "success": False,
             "message": (
                 "Unable to fetch route "
-                "information"
+                "information."
             )
         }
 
@@ -599,11 +806,9 @@ async def route_risk(
 
     distance_km = route_data["distance_km"]
 
-    duration_hours = route_data[
+    baseline_duration = route_data[
         "duration_hours"
     ]
-
-    # DECODE ROUTE
 
     decoded_coordinates = polyline.decode(
         route_geometry
@@ -617,64 +822,116 @@ async def route_risk(
             [lon, lat]
         )
 
-    # CHECKPOINTS
-
     waypoints = sample_waypoints(
         formatted_coordinates
     )
 
-    # ANALYSIS
-
     route_analysis = await analyze_route(
-        waypoints
+        waypoints,
+        distance_km,
+        baseline_duration
     )
 
     recommendation = generate_recommendation(
-        route_analysis[
-            "overall_risk_level"
-        ],
-        distance_km
+        route_analysis
     )
 
-    # FINAL RESPONSE
-
     return {
+
         "success": True,
 
         "source": source,
 
         "destination": destination,
 
-        "route_distance_km": distance_km,
+        "route_summary": {
 
-        "estimated_travel_time_hours":
-            duration_hours,
+            "route_distance_km":
+                distance_km,
 
-        "overall_risk_score":
-            route_analysis[
-                "overall_risk_score"
-            ],
+            "baseline_travel_time_hours":
+                baseline_duration,
 
-        "overall_risk_level":
-            route_analysis[
-                "overall_risk_level"
-            ],
+            "predicted_operational_travel_time_hours":
+                route_analysis[
+                    "predicted_operational_travel_time_hours"
+                ],
 
-        "estimated_delay_hours":
-            route_analysis[
-                "estimated_delay_hours"
-            ],
+            "checkpoints_analyzed":
+                route_analysis[
+                    "segments_analyzed"
+                ]
+        },
 
-        "risk_factors":
-            route_analysis[
-                "risk_factors"
-            ],
+        "traffic_summary": {
+
+            "congestion_level":
+                route_analysis[
+                    "traffic_level"
+                ],
+
+            "average_corridor_speed_kmph":
+                route_analysis[
+                    "average_speed"
+                ],
+
+            "operational_traffic_impact":
+                route_analysis[
+                    "traffic_interpretation"
+                ]
+        },
+
+        "weather_summary": {
+
+            "dominant_weather_condition":
+                route_analysis[
+                    "dominant_weather"
+                ],
+
+            "temperature_celsius":
+                route_analysis[
+                    "max_temperature"
+                ],
+
+            "weather_instability_detected":
+                route_analysis[
+                    "weather_instability"
+                ],
+
+            "weather_risk_factors":
+                route_analysis[
+                    "risk_factors"
+                ]
+        },
+
+        "operational_assessment": {
+
+            "overall_risk_score":
+                route_analysis[
+                    "overall_risk_score"
+                ],
+
+            "overall_risk_level":
+                route_analysis[
+                    "overall_risk_level"
+                ],
+
+            "estimated_operational_delay_hours":
+                route_analysis[
+                    "estimated_delay_hours"
+                ],
+
+            "corridor_stability":
+                route_analysis[
+                    "corridor_stability"
+                ],
+
+            "dispatch_feasibility":
+                route_analysis[
+                    "dispatch_feasibility"
+                ]
+        },
 
         "recommendation":
-            recommendation,
-
-        "checkpoints_analyzed":
-            route_analysis[
-                "segments_analyzed"
-            ]
+            recommendation
     }
