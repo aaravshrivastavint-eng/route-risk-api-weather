@@ -1,4 +1,5 @@
 from fastapi import FastAPI
+from fastapi import HTTPException
 from pydantic import BaseModel
 from typing import List
 from dotenv import load_dotenv
@@ -6,6 +7,7 @@ import httpx
 import os
 import polyline
 import asyncio
+
 
 load_dotenv()
 
@@ -823,10 +825,10 @@ async def route_risk(
 
     if not source_coords or not destination_coords:
 
-        return {
-            "success": False,
-            "message": "Invalid source or destination city."
-        }
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid source or destination city."
+    )
 
     route_data = await get_route(
         source_coords,
@@ -835,10 +837,10 @@ async def route_risk(
 
     if not route_data:
 
-        return {
-            "success": False,
-            "message": "Unable to fetch route information."
-        }
+        raise HTTPException(
+            status_code=500,
+            detail="Unable to fetch route information."
+        )
 
     route_geometry = route_data["geometry"]
 
