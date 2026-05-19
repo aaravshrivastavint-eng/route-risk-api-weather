@@ -1,4 +1,6 @@
 from fastapi import FastAPI
+from pydantic import BaseModel
+from typing import List
 from dotenv import load_dotenv
 import httpx
 import os
@@ -9,18 +11,84 @@ load_dotenv()
 
 app = FastAPI(
     title="Route Risk Operational Intelligence API",
-    version="4.0.0",
-    description=(
-        "Corridor-level logistics operational intelligence API"
-    )
+    version="5.0.0",
+    description="Corridor-level logistics operational intelligence API"
 )
+
+# =========================================================
+# RESPONSE MODELS
+# =========================================================
+
+class RouteSummary(BaseModel):
+
+    route_distance_km: float
+
+    baseline_travel_time_hours: float
+
+    predicted_operational_travel_time_hours: float
+
+    checkpoints_analyzed: int
+
+
+class TrafficSummary(BaseModel):
+
+    congestion_level: str
+
+    average_corridor_speed_kmph: float
+
+    operational_traffic_impact: str
+
+
+class WeatherSummary(BaseModel):
+
+    dominant_weather_condition: str
+
+    temperature_celsius: float
+
+    weather_instability_detected: bool
+
+    weather_risk_factors: List[str]
+
+
+class OperationalAssessment(BaseModel):
+
+    overall_risk_score: int
+
+    overall_risk_level: str
+
+    estimated_operational_delay_hours: float
+
+    corridor_stability: str
+
+    dispatch_feasibility: str
+
+
+class RouteRiskResponse(BaseModel):
+
+    success: bool
+
+    source: str
+
+    destination: str
+
+    route_summary: RouteSummary
+
+    traffic_summary: TrafficSummary
+
+    weather_summary: WeatherSummary
+
+    operational_assessment: OperationalAssessment
+
+    recommendation: str
 
 # =========================================================
 # ENV VARIABLES
 # =========================================================
 
 OPENWEATHER_API_KEY = os.getenv("OPENWEATHER_API_KEY")
+
 OPENROUTE_API_KEY = os.getenv("OPENROUTE_API_KEY")
+
 TOMTOM_API_KEY = os.getenv("TOMTOM_API_KEY")
 
 # =========================================================
@@ -529,10 +597,6 @@ async def analyze_route(
             ]
         )
 
-    # =====================================================
-    # SPEED + ETA MODEL
-    # =====================================================
-
     if all_speeds:
 
         effective_speed = round(
@@ -558,10 +622,6 @@ async def analyze_route(
         ),
         2
     )
-
-    # =====================================================
-    # COMBINED RISK MODEL
-    # =====================================================
 
     avg_weather_score = (
         sum(all_weather_scores) /
@@ -594,10 +654,6 @@ async def analyze_route(
 
         risk_level = "LOW"
 
-    # =====================================================
-    # CORRIDOR STABILITY
-    # =====================================================
-
     if effective_speed < 35:
 
         corridor_stability = "Congested"
@@ -609,10 +665,6 @@ async def analyze_route(
     else:
 
         corridor_stability = "Stable"
-
-    # =====================================================
-    # TRAFFIC INTERPRETATION
-    # =====================================================
 
     if effective_speed >= 55:
 
@@ -641,22 +693,17 @@ async def analyze_route(
 
         congestion_level = "HIGH"
 
-    # =====================================================
-    # DISPATCH FEASIBILITY
-    # =====================================================
-
     if risk_level == "CRITICAL":
 
         dispatch_feasibility = (
-            "Avoid non-essential dispatch "
-            "operations."
+            "Avoid non-essential dispatch operations."
         )
 
     elif risk_level == "HIGH":
 
         dispatch_feasibility = (
-            "Dispatch only with active "
-            "monitoring and rerouting readiness."
+            "Dispatch only with active monitoring "
+            "and rerouting readiness."
         )
 
     elif risk_level == "MEDIUM":
@@ -669,8 +716,7 @@ async def analyze_route(
     else:
 
         dispatch_feasibility = (
-            "Acceptable for standard "
-            "shipment movement."
+            "Acceptable for standard shipment movement."
         )
 
     return {
@@ -729,27 +775,26 @@ def generate_recommendation(analysis):
     if level == "CRITICAL":
 
         return (
-            "Severe operational instability "
-            "detected across the shipment corridor. "
-            "Dispatch operations should be avoided "
-            "until route conditions stabilize."
+            "Severe operational instability detected "
+            "across the shipment corridor. Dispatch "
+            "operations should be avoided until "
+            "route conditions stabilize."
         )
 
     elif level == "HIGH":
 
         return (
-            "Operational degradation detected "
-            "across multiple route segments. "
-            "Prepare rerouting contingencies and "
-            "monitor movement continuously."
+            "Operational degradation detected across "
+            "multiple route segments. Prepare rerouting "
+            "contingencies and monitor movement continuously."
         )
 
     elif level == "MEDIUM":
 
         return (
             "Moderate operational disruption detected. "
-            "Shipment movement may continue with "
-            "active monitoring and ETA buffer adjustments."
+            "Shipment movement may continue with active "
+            "monitoring and ETA buffer adjustments."
         )
 
     return (
@@ -762,29 +807,25 @@ def generate_recommendation(analysis):
 # MAIN API
 # =========================================================
 
-@app.get("/route-risk")
+@app.get(
+    "/route-risk",
+    response_model=RouteRiskResponse
+)
 
 async def route_risk(
     source: str,
     destination: str
 ):
 
-    source_coords = await get_coordinates(
-        source
-    )
+    source_coords = await get_coordinates(source)
 
-    destination_coords = await get_coordinates(
-        destination
-    )
+    destination_coords = await get_coordinates(destination)
 
     if not source_coords or not destination_coords:
 
         return {
             "success": False,
-            "message": (
-                "Invalid source or "
-                "destination city."
-            )
+            "message": "Invalid source or destination city."
         }
 
     route_data = await get_route(
@@ -796,19 +837,14 @@ async def route_risk(
 
         return {
             "success": False,
-            "message": (
-                "Unable to fetch route "
-                "information."
-            )
+            "message": "Unable to fetch route information."
         }
 
     route_geometry = route_data["geometry"]
 
     distance_km = route_data["distance_km"]
 
-    baseline_duration = route_data[
-        "duration_hours"
-    ]
+    baseline_duration = route_data["duration_hours"]
 
     decoded_coordinates = polyline.decode(
         route_geometry
